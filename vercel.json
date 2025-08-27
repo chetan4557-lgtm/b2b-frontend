@@ -1,8 +1,5 @@
 {
   "buildCommand": "npm run build",
   "installCommand": "npm install --include=dev",
-  "outputDirectory": "dist",
-  "engines": {
-    "node": "18.x"
-  }
+  "outputDirectory": "dist"
 }
