@@ -2,53 +2,43 @@ import { useState } from "react";
 import { useAppStore } from "../context/AppStore";
 
 export default function RFQModal({ product, onClose }) {
-  const { createRFQ, getTierPrice } = useAppStore();
-  const [qty, setQty] = useState(product.moq || 1);
+  const { createRFQ } = useAppStore();
+  const [qty, setQty] = useState(1);
   const [specs, setSpecs] = useState("");
-  const [targetPrice, setTargetPrice] = useState(getTierPrice(product, qty));
+  const [target, setTarget] = useState("");
 
   const submit = () => {
-    if (qty < (product.moq || 1)) return alert(`MOQ is ${product.moq}`);
-    if (qty % (product.cartonMultiple || 1) !== 0)
-      return alert(`Quantity must be a multiple of ${product.cartonMultiple}`);
-    createRFQ({ productId: product.id, qty, specs, targetPrice });
+    createRFQ({
+      items: [{ productId: product.id, qty: Number(qty), specs }],
+      targetPrice: target === "" ? null : Number(target),
+      note: "",
+    });
     onClose?.();
     alert("RFQ submitted!");
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-5 w-full max-w-lg">
-        <h2 className="text-xl font-bold mb-3">Request Quote — {product.name}</h2>
-
-        <label className="block text-sm">Quantity (MOQ {product.moq}, multiple of {product.cartonMultiple})</label>
-        <input
-          type="number"
-          min={product.moq || 1}
-          value={qty}
-          onChange={(e) => setQty(Math.max(product.moq || 1, Number(e.target.value) || 1))}
-          className="w-full border rounded px-3 py-2 mb-3"
-        />
-
-        <label className="block text-sm">Specs / Notes</label>
-        <textarea
-          value={specs}
-          onChange={(e) => setSpecs(e.target.value)}
-          rows={3}
-          className="w-full border rounded px-3 py-2 mb-3"
-        />
-
-        <label className="block text-sm">Target Price (per unit)</label>
-        <input
-          type="number"
-          value={targetPrice}
-          onChange={(e) => setTargetPrice(Number(e.target.value) || 0)}
-          className="w-full border rounded px-3 py-2 mb-4"
-        />
-
-        <div className="flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded border">Cancel</button>
-          <button onClick={submit} className="px-4 py-2 rounded bg-blue-600 text-white">Submit RFQ</button>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg p-4 w-full max-w-md space-y-3">
+        <div className="text-lg font-semibold">Request Quote — {product.name}</div>
+        <div>
+          <label className="block text-xs text-gray-600">Quantity</label>
+          <input type="number" min={1} value={qty} onChange={(e) => setQty(e.target.value)}
+                 className="border rounded px-2 py-1 w-full" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-600">Specs / Notes</label>
+          <textarea value={specs} onChange={(e) => setSpecs(e.target.value)}
+                    className="border rounded px-2 py-1 w-full h-20" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-600">Target Price (optional)</label>
+          <input type="number" value={target} onChange={(e) => setTarget(e.target.value)}
+                 className="border rounded px-2 py-1 w-full" />
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="border px-3 py-1 rounded">Cancel</button>
+          <button onClick={submit} className="bg-blue-600 text-white px-3 py-1 rounded">Submit RFQ</button>
         </div>
       </div>
     </div>

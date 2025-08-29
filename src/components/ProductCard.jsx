@@ -1,47 +1,34 @@
-import { useContext, useState } from "react";
 import { Link } from "react-router-dom";
-import { CartContext } from "../context/CartContext";
+import { getProductImage, fallbackPlaceholder } from "../utils/imageService";
 
 export default function ProductCard({ product }) {
-  const { addToCart } = useContext(CartContext);
-  const [qty, setQty] = useState(product.moq || 1);
+  const moq = Number.isFinite(Number(product?.moq)) ? Number(product.moq) : 1;
+  const carton = Number.isFinite(Number(product?.cartonMultiple)) ? Number(product.cartonMultiple) : 1;
+  const src = getProductImage(product);
 
   return (
-    <div className="border p-4 rounded-lg shadow-md">
-      {product.image && (
-        <img src={product.image} alt={product.name} className="w-full h-48 object-cover rounded-md mb-3" />
-      )}
+    <div className="border rounded-xl shadow-sm overflow-hidden bg-white">
+      <Link to={`/products/${product.id}`} className="block w-full">
+        <div className="aspect-[4/3] bg-gray-100 w-full overflow-hidden">
+          <img
+            src={src}
+            alt={product?.name || "Product"}
+            className="w-full h-full object-cover hover:scale-105 transition-transform"
+            loading="lazy"
+            decoding="async"
+            referrerPolicy="no-referrer"
+            onError={(e) => (e.currentTarget.src = fallbackPlaceholder(800, 600, product?.name || "Product"))}
+          />
+        </div>
+      </Link>
 
-      <h2 className="text-xl font-bold">{product.name}</h2>
-      <p className="text-gray-600">{product.description}</p>
-
-      <p className="text-green-700 font-semibold mb-3">
-        MOQ {product.moq} • Carton×{product.cartonMultiple}
-      </p>
-
-      <div className="flex items-center gap-3">
-        <input
-          type="number"
-          min={product.moq || 1}
-          step={product.cartonMultiple || 1}
-          value={qty}
-          onChange={(e) => setQty(Math.max(product.moq || 1, Number(e.target.value) || 1))}
-          className="w-24 border rounded px-2 py-1"
-        />
-        <button
-          onClick={() => {
-            if (qty < (product.moq || 1)) return alert(`MOQ is ${product.moq}`);
-            if (qty % (product.cartonMultiple || 1) !== 0)
-              return alert(`Quantity must be a multiple of ${product.cartonMultiple}`);
-            addToCart({ ...product, price: 0 }, qty); // price computed in Cart using tiers
-          }}
-          className="bg-blue-500 text-white px-4 py-2 rounded"
-        >
-          Add to Cart
-        </button>
-        <Link to={`/products/${product.id}`} className="ml-auto text-blue-600 underline">
-          View details
-        </Link>
+      <div className="p-3">
+        <div className="font-semibold text-lg truncate" title={product?.name}>
+          {product?.name || "Unnamed product"}
+        </div>
+        <div className="text-sm text-gray-600">
+          MOQ {moq} • Carton×{carton}
+        </div>
       </div>
     </div>
   );

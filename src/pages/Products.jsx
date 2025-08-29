@@ -1,88 +1,98 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useLocation, Link } from "react-router-dom";
 import ProductCard from "../components/ProductCard";
 import { useAppStore } from "../context/AppStore";
 import Filters from "../components/Filters";
-import CompareBar from "../components/CompareBar";
+
+const N = Number;
+const isFin = (v) => N.isFinite(N(v));
+const nOr = (v, f) => (isFin(v) ? N(v) : f);
+
+const normalize = (s) => String(s || "").trim().toLowerCase();
 
 export default function Products() {
   const { products } = useAppStore();
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
 
-  // Pull initial search from URL (?q=xxx)
-  const [q, setQ] = useState(new URLSearchParams(location.search).get("q") || "");
-  const [minMOQ, setMinMOQ] = useState(1);
-  const [maxLead, setMaxLead] = useState(999);
-  const [priceRange, setPriceRange] = useState([0, 999999]); // INR
-  const [compare, setCompare] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("compare") || "[]"); } catch { return []; }
-  });
+  // NEW: support category param (cat=mixers)
+  const catParam = normalize(params.get("cat"));
+  const initialQ = params.get("q") || "";
+  const limitParam = params.get("limit");
+  const initialLimit = limitParam && isFin(N(limitParam)) ? N(limitParam) : undefined;
 
-  useEffect(() => {
-    localStorage.setItem("compare", JSON.stringify(compare));
-  }, [compare]);
+  const [q, setQ] = useState(initialQ);
 
-  const list = useMemo(() => {
-    let data = products.filter(p =>
-      (p.name + " " + p.description).toLowerCase().includes(q.toLowerCase())
-    );
-    data = data.filter(p => (p.moq || 1) >= minMOQ);
-    data = data.filter(p => (p.leadDays || 0) <= maxLead);
-    data = data.filter(p => {
-      const base = p.tiers?.[0]?.price ?? 0;
-      return base >= priceRange[0] && base <= priceRange[1];
-    });
-    return data;
-  }, [products, q, minMOQ, maxLead, priceRange]);
+  // Build filtered list
+  const { list, appliedCategory } = useMemo(() => {
+    const src = Array.isArray(products) ? products : [];
+    let data = [...src];
+
+    // If cat is present, filter STRICTLY by category
+    let appliedCategory = "";
+    if (catParam) {
+      appliedCategory = catParam;
+      data = data.filter((p) => normalize(p.category) === catParam);
+      // Fallback: also accept singular/plural name matches if category field is absent/mismatched
+      if (data.length < 5) {
+        const alt = src.filter(
+          (p) =>
+            normalize(p.name).includes(catParam.replace(/s$/, "")) ||
+            normalize(p.description).includes(catParam.replace(/s$/, ""))
+        );
+        // merge without duplicates
+        const ids = new Set(data.map((d) => String(d.id)));
+        for (const a of alt) if (!ids.has(String(a.id))) data.push(a);
+      }
+    }
+
+    // Then apply free-text search if q is provided (acts as additional filter)
+    const qNorm = normalize(q);
+    if (qNorm) {
+      data = data.filter((p) =>
+        (normalize(p.name) + " " + normalize(p.description) + " " + normalize(p.category)).includes(qNorm)
+      );
+    }
+
+    // Basic numeric filters could go here if you re-enable them
+
+    // Limit if requested (e.g., cat click passes limit=5)
+    if (initialLimit) data = data.slice(0, initialLimit);
+
+    return { list: data, appliedCategory };
+  }, [products, q, catParam, initialLimit]);
 
   return (
-    <div className="p-6">
-      <Filters
-        q={q}
-        onQ={setQ}
-        minMOQ={minMOQ}
-        onMinMOQ={setMinMOQ}
-        maxLead={maxLead}
-        onMaxLead={setMaxLead}
-        priceRange={priceRange}
-        onPriceRange={setPriceRange}
-      />
+    <div className="p-6 space-y-4">
+      {/* Optional context bar when category is applied */}
+      {appliedCategory && (
+        <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+          <div>
+            <span className="font-semibold capitalize">{appliedCategory}</span>
+            {initialLimit ? <span className="text-sm text-gray-600"> — showing top {initialLimit}</span> : null}
+          </div>
+          <Link
+            to={`/products?cat=${encodeURIComponent(appliedCategory)}`}
+            className="text-sm underline"
+            title="View all in this category"
+          >
+            View all
+          </Link>
+        </div>
+      )}
+
+      {/* Header: compact search only (no results count/reset) */}
+      <div className="flex items-center justify-start">
+        <Filters q={q} onQ={setQ} />
+      </div>
 
       <div className="grid md:grid-cols-3 gap-6">
         {list.map((p) => (
-          <div key={p.id} className="space-y-2 border rounded-xl p-3">
-            <div className="flex items-center justify-between">
-              <label className="text-sm flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={compare.includes(p.id)}
-                  onChange={(e) => {
-                    setCompare(prev => e.target.checked ? [...new Set([...prev, p.id])] : prev.filter(x => x !== p.id));
-                  }}
-                />
-                Compare
-              </label>
-              <span className="text-xs text-gray-600">Lead: {p.leadDays}d</span>
-            </div>
-
-            <ProductCard product={p} />
-
-            <div className="text-xs text-gray-600">
-              {p.tiers.map((t,i)=>(
-                <span key={i} className="inline-block mr-2 border rounded px-2 py-0.5">
-                  {t.min}–{t.max}: ₹{t.price}
-                </span>
-              ))}
-              <span className="inline-block ml-2">MOQ {p.moq}, multiple {p.cartonMultiple}</span>
-            </div>
-          </div>
+          <ProductCard key={p.id} product={p} />
         ))}
-        {list.length === 0 && <div className="text-gray-500">No products match the filters.</div>}
       </div>
 
-      <CompareBar
-        products={products.filter(p => compare.includes(p.id))}
-        onClear={() => setCompare([])}
-        onRemove={(id) => setCompare(compare.filter(x => x !== id))}
-      />
+      {list.length === 0 && <div className="text-gray-500">No products match your selection.</div>}
     </div>
   );
 }

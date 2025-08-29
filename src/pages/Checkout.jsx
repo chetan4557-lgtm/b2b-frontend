@@ -1,128 +1,192 @@
-import { useContext, useMemo, useState } from "react";
-import { CartContext } from "../context/CartContext";
+import { useMemo, useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../context/AppStore";
-import { useLocation } from "react-router-dom";
+import { useContext } from "react";
+import { CartContext } from "../context/CartContext";
+import { calcOrderTaxes, isValidGSTIN, getHSNRate } from "../utils/tax";
+import InvoiceButton from "../components/InvoiceButton";
 
-const gstinRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/i;
+const N = globalThis.Number;
+const isFin = (v) => N.isFinite(N(v));
+const nOr = (v, f) => (isFin(v) ? N(v) : f);
+
+const SELLER_STATE = "KA"; // change to your seller's state code
 
 export default function Checkout() {
-  const { cart, clear } = useContext(CartContext);
-  const { products, getTierPrice, addresses, setAddresses, org, setOrders } = useAppStore();
-  const [addressId, setAddressId] = useState(addresses[0]?.id || null);
+  const nav = useNavigate();
+  const { products, getTierPrice, addOrder, org, setOrg, addresses } = useAppStore();
+  const { cart = [], clear } = useContext(CartContext);
+
+  const [addressId, setAddressId] = useState(addresses[0]?.id ?? null);
+  const [payment, setPayment] = useState("Card/UPI");
   const [gstin, setGstin] = useState(org.gstin || "");
-  const [payment, setPayment] = useState("PO");
-  const [poNumber, setPoNumber] = useState("");
-  const [poFileName, setPoFileName] = useState("");
-  const [placedId, setPlacedId] = useState(null);
-  const { state } = useLocation();
+  const [gstError, setGstError] = useState("");
 
-  const items = useMemo(() => cart.map(c => {
-    const p = products.find(x => x.id === c.id);
-    const unit = getTierPrice(p, c.qty);
-    return { ...c, name: p.name, hsn: p.hsn, unit, image: p.image };
-  }), [cart, products, getTierPrice]);
+  useEffect(() => {
+    if (gstin && !isValidGSTIN(gstin)) setGstError("Invalid GSTIN format");
+    else setGstError("");
+  }, [gstin]);
 
-  const subtotal = items.reduce((s,i)=>s+i.unit*i.qty,0);
+  const shipAddr = useMemo(
+    () => addresses.find((a) => String(a.id) === String(addressId)) || null,
+    [addresses, addressId]
+  );
 
-  // Simple tax: if state === KA → CGST+SGST (9%+9%), else IGST 18%
-  const selectedAddress = addresses.find(a => a.id === addressId);
-  const intraState = selectedAddress?.state?.toUpperCase() === "KA";
-  const tax = Math.round(subtotal * 0.18);
-  const cgst = intraState ? Math.round(tax/2) : 0;
-  const sgst = intraState ? Math.round(tax/2) : 0;
-  const igst = intraState ? 0 : tax;
-  const total = subtotal + tax;
+  const items = useMemo(() => {
+    const catalog = Array.isArray(products) ? products : [];
+    const src = Array.isArray(cart) ? cart : [];
+    return src.map((c) => {
+      const p = catalog.find((x) => String(x.id) === String(c.id));
+      const qty = nOr(c.qty, 1);
+      const unit = p ? getTierPrice(p, qty) : null;
+      // choose rate: product.taxRate > inferred from HSN > fallback
+      const inferred = getHSNRate(p?.hsn);
+      const gstRate = Number.isFinite(Number(p?.taxRate))
+        ? Number(p.taxRate)
+        : (inferred ?? 18);
 
-  const placeOrder = (e) => {
-    e.preventDefault();
-    if (!gstinRegex.test(gstin)) return alert("Invalid GSTIN format");
-    if (payment === "PO" && !poNumber) return alert("PO number required");
+      return {
+        productId: c.id,
+        name: p?.name || "",
+        hsn: p?.hsn || "",
+        qty,
+        unitPrice: unit,
+        gstRate,
+        lineTotal: isFin(unit) ? unit * qty : 0,
+      };
+    });
+  }, [cart, products, getTierPrice]);
 
-    const id = Date.now();
-    setOrders(o => [...o, {
-      id,
-      from: "CHECKOUT",
-      items: items.map(i => ({ productId: i.id, name: i.name, hsn: i.hsn, qty: i.qty, unit: i.unit, image: i.image })),
+  const subtotal = items.reduce((s, x) => s + (isFin(x.lineTotal) ? x.lineTotal : 0), 0);
+  const needsApproval =
+    subtotal > nOr(org.approvalLimit, 0) ||
+    ["PO", "Net-30", "Net-45", "Credit Line"].includes(payment);
+
+  const taxes = useMemo(() => {
+    const buyerState = shipAddr?.state || "";
+    return calcOrderTaxes(items, {
+      sellerState: SELLER_STATE,
+      buyerState,
+      defaultRate: 18,
+    });
+  }, [items, shipAddr]);
+
+  const placeOrder = () => {
+    if (gstin && isValidGSTIN(gstin)) {
+      setOrg({ ...org, gstin: gstin.toUpperCase() });
+    }
+
+    const orderId = addOrder({
+      status: needsApproval ? "PendingApproval" : "Confirmed",
+      paymentMethod: payment,
       addressId,
-      status: state?.needsApproval ? "PENDING_APPROVAL" : "CONFIRMED",
-      timeline: [{ at: new Date().toISOString(), status: state?.needsApproval ? "PENDING_APPROVAL" : "CONFIRMED" }],
-      taxes: { cgst, sgst, igst },
-      totals: { subtotal, tax, total },
-      payment: { method: payment, poNumber, poFileName, terms: org.netTerms },
-      gstin
-    }]);
+      items,
+      totals: {
+        subtotal,
+        taxable: taxes.totals.taxableTotal,
+        cgst: taxes.totals.cgstTotal,
+        sgst: taxes.totals.sgstTotal,
+        igst: taxes.totals.igstTotal,
+        tax: taxes.totals.taxTotal,
+        grandTotal: taxes.totals.grandTotal,
+      },
+      meta: { gstin: gstin || null },
+    });
+
     clear();
-    setPlacedId(id);
+    nav("/orders");
+    console.log("Order placed:", orderId);
   };
 
-  if (placedId) {
-    return (
-      <div className="p-6 max-w-3xl mx-auto">
-        <h1 className="text-2xl font-bold mb-2">Order placed!</h1>
-        <p className="mb-4">Order #{placedId}. {state?.needsApproval ? "Pending approval by approver." : "We will process it shortly."}</p>
-        <button className="border px-4 py-2 rounded" onClick={() => window.print()}>
-          Print / Save Tax Invoice (PDF)
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <div className="p-6 max-w-5xl mx-auto grid md:grid-cols-2 gap-8">
-      <div>
-        <h2 className="text-xl font-bold mb-3">Order Summary</h2>
-        <div className="space-y-2">
-          {items.map(i => (
-            <div key={i.id} className="flex justify-between">
-              <span>{i.name} (HSN {i.hsn}) × {i.qty}</span>
-              <span>₹{i.unit * i.qty}</span>
-            </div>
+    <div className="p-6 max-w-4xl mx-auto space-y-6">
+      <h1 className="text-2xl font-bold">Checkout</h1>
+
+      <section className="border rounded-lg p-4 bg-white space-y-2">
+        <h2 className="font-semibold">Buyer GST Details</h2>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-gray-600">GSTIN</label>
+            <input
+              className={`border rounded px-3 py-2 w-full ${gstError ? "border-red-500" : ""}`}
+              value={gstin}
+              onChange={(e) => setGstin(e.target.value.toUpperCase())}
+              placeholder="22AAAAA0000A1Z5"
+            />
+            {gstError && <div className="text-xs text-red-600 mt-1">{gstError}</div>}
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600">Org Name</label>
+            <input className="border rounded px-3 py-2 w-full" value={org.name} readOnly />
+          </div>
+        </div>
+      </section>
+
+      <section className="border rounded-lg p-4 bg-white space-y-2">
+        <h2 className="font-semibold">Shipping Address</h2>
+        <select
+          className="border rounded px-3 py-2"
+          value={addressId ?? ""}
+          onChange={(e) => setAddressId(Number(e.target.value))}
+        >
+          {addresses.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name} — {a.line1}, {a.city} ({a.state})
+            </option>
+          ))}
+        </select>
+      </section>
+
+      <section className="border rounded-lg p-4 bg-white space-y-2">
+        <h2 className="font-semibold">Payment</h2>
+        <div className="grid md:grid-cols-2 gap-3">
+          {["Card/UPI", "PO", "Net-30", "Net-45", "Credit Line"].map((m) => (
+            <label key={m} className="flex items-center gap-2 border rounded px-3 py-2">
+              <input
+                type="radio"
+                name="pay"
+                value={m}
+                checked={payment === m}
+                onChange={(e) => setPayment(e.target.value)}
+              />
+              {m}
+            </label>
           ))}
         </div>
-        <div className="mt-3 text-sm text-gray-600">Subtotal: ₹{subtotal}</div>
-        {intraState ? (
-          <div className="text-sm text-gray-600">CGST 9%: ₹{cgst} • SGST 9%: ₹{sgst}</div>
-        ) : (
-          <div className="text-sm text-gray-600">IGST 18%: ₹{igst}</div>
+        {needsApproval && (
+          <div className="mt-2 text-sm text-amber-700">
+            This order will be placed as <b>Pending Approval</b> (limit: ₹{org.approvalLimit}).
+          </div>
         )}
-        <div className="text-lg font-bold mt-1">Total: ₹{total}</div>
-      </div>
+      </section>
 
-      <form onSubmit={placeOrder} className="border rounded p-4 shadow">
-        <h2 className="text-xl font-bold mb-4">Billing & Payment</h2>
+      <section className="border rounded-lg p-4 bg-white space-y-1">
+        <h2 className="font-semibold">Summary (GST)</h2>
+        <div className="text-sm text-gray-700">Items: {items.length}</div>
+        <div className="text-sm text-gray-700">Taxable Value: ₹{taxes.totals.taxableTotal}</div>
+        <div className="text-sm text-gray-700">CGST: ₹{taxes.totals.cgstTotal}</div>
+        <div className="text-sm text-gray-700">SGST: ₹{taxes.totals.sgstTotal}</div>
+        <div className="text-sm text-gray-700">IGST: ₹{taxes.totals.igstTotal}</div>
+        <div className="text-lg font-bold">Grand Total: ₹{taxes.totals.grandTotal}</div>
 
-        <label className="block text-sm mb-1">Select Address</label>
-        <select value={addressId ?? ""} onChange={(e)=>setAddressId(Number(e.target.value))} className="w-full border rounded px-3 py-2 mb-3">
-          {addresses.map(a => <option key={a.id} value={a.id}>{a.name} — {a.city}, {a.state} ({a.pincode})</option>)}
-        </select>
-        <a className="text-blue-600 underline text-sm" href="/address-book">Manage addresses</a>
+        <div className="flex gap-2 mt-2">
+          <InvoiceButton
+            order={{ id: "preview", items }}
+            org={{ name: org.name, gstin: gstin || org.gstin }}
+            address={shipAddr}
+            taxes={taxes}
+          />
+        </div>
+      </section>
 
-        <label className="block text-sm mt-4 mb-1">GSTIN</label>
-        <input value={gstin} onChange={(e)=>setGstin(e.target.value.toUpperCase())} placeholder="22ABCDE1234F1Z5" className="w-full border rounded px-3 py-2 mb-3" />
-
-        <label className="block text-sm mb-1">Payment Method</label>
-        <select value={payment} onChange={(e)=>setPayment(e.target.value)} className="w-full border rounded px-3 py-2 mb-3">
-          <option value="PO">Purchase Order (PO)</option>
-          <option value="Net-30">Net-30</option>
-          <option value="Net-45">Net-45</option>
-          <option value="CreditLine">Credit Line</option>
-          <option value="UPI">UPI</option>
-          <option value="Card">Card</option>
-        </select>
-
-        {payment === "PO" && (
-          <>
-            <label className="block text-sm mb-1">PO Number</label>
-            <input value={poNumber} onChange={(e)=>setPoNumber(e.target.value)} className="w-full border rounded px-3 py-2 mb-3" />
-            <label className="block text-sm mb-1">Upload PO (filename only demo)</label>
-            <input type="text" placeholder="po.pdf" value={poFileName} onChange={(e)=>setPoFileName(e.target.value)} className="w-full border rounded px-3 py-2 mb-3" />
-          </>
-        )}
-
-        <button type="submit" className="w-full bg-green-600 text-white py-2 rounded">
-          {state?.needsApproval ? "Submit Order for Approval" : "Place Order"}
-        </button>
-      </form>
+      <button
+        onClick={placeOrder}
+        className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
+        disabled={!!gstError}
+        title={gstError ? "Fix GSTIN to proceed" : ""}
+      >
+        Place Order
+      </button>
     </div>
   );
 }
